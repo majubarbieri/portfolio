@@ -297,16 +297,21 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
 <script>
 // ── CONFIG ──
 const ORDER = ['desktop','tablet','mobile'];
-const BASE_DIMS = {desktop:[1440,900], tablet:[1024,1366], mobile:[390,844]};
-const LABELS = {desktop:'Desktop',tablet:'Tablet',mobile:'Mobile'};
+const LABELS = {desktop:'Desktop', tablet:'Tablet', mobile:'Mobile'};
 const AMBIENTS = {
   desktop:[document.getElementById('amb-d')],
   tablet:[document.getElementById('amb-t')],
   mobile:[document.getElementById('amb-m1'),document.getElementById('amb-m2')]
 };
 
+// Breakpoints: desktop >= 1025, tablet >= 768, mobile < 768
+const BP_DESKTOP = 1025;
+const BP_TABLET  = 768;
+
 let current = 'desktop';
 let animating = false;
+let isDragging = false;
+let globalW = 1200; // virtual viewport width
 
 // ── PILL ──
 function updatePill(target, instant) {
@@ -321,160 +326,187 @@ function updatePill(target, instant) {
 }
 
 // ── BADGE ──
-function updateBadge(view, w) {
-  const [bw, bh] = BASE_DIMS[view];
-  const fw = w || bw;
-  const fh = Math.round(fw * bh / bw);
-  const txt = fw + ' × ' + fh;
-  document.getElementById('bp-badge').textContent = txt;
+function updateBadge(w) {
+  document.getElementById('bp-badge').textContent = Math.round(w) + 'px';
 }
 
-// ── SWITCH ──
-function switchTo(target) {
-  if (target === current || animating) return;
-  animating = true;
+// ── RESOLVE BREAKPOINT ──
+function resolveBreakpoint(w) {
+  if (w >= BP_DESKTOP) return 'desktop';
+  if (w >= BP_TABLET)  return 'tablet';
+  return 'mobile';
+}
+
+// ── SWITCH VIEW ──
+function switchTo(target, fromDrag) {
+  if (target === current) return;
+  if (animating && !fromDrag) return;
+  if (!fromDrag) animating = true;
+
   const fromIdx = ORDER.indexOf(current);
   const toIdx   = ORDER.indexOf(target);
   const goRight = toIdx > fromIdx;
   const outV = document.getElementById(current+'-view');
   const inV  = document.getElementById(target+'-view');
 
-  outV.classList.remove('settled','enter-l','enter-r');
-  outV.classList.add(goRight ? 'exit-l' : 'exit-r');
-  outV.classList.remove('visible'); outV.classList.add('hidden');
-
-  inV.classList.remove('exit-l','exit-r','settled','hidden');
-  inV.classList.add(goRight ? 'enter-r' : 'enter-l');
-  inV.style.opacity = '0';
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    inV.classList.remove('enter-l','enter-r');
-    inV.classList.add('settled','visible');
-    inV.style.opacity = '';
-  }));
+  if (fromDrag) {
+    // Instant swap while dragging
+    outV.classList.remove('visible','settled','enter-l','enter-r','exit-l','exit-r');
+    outV.classList.add('hidden');
+    inV.classList.remove('hidden','enter-l','enter-r','exit-l','exit-r');
+    inV.classList.add('visible','settled');
+  } else {
+    outV.classList.remove('settled','enter-l','enter-r');
+    outV.classList.add(goRight ? 'exit-l' : 'exit-r');
+    outV.classList.remove('visible'); outV.classList.add('hidden');
+    inV.classList.remove('exit-l','exit-r','settled','hidden');
+    inV.classList.add(goRight ? 'enter-r' : 'enter-l');
+    inV.style.opacity = '0';
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      inV.classList.remove('enter-l','enter-r');
+      inV.classList.add('settled','visible');
+      inV.style.opacity = '';
+    }));
+  }
 
   document.querySelectorAll('.sw-btn').forEach(b => {
     const a = b.dataset.view === target;
     b.classList.toggle('active', a);
     b.setAttribute('aria-selected', String(a));
   });
-  updatePill(target);
-  updateBadge(target);
+  updatePill(target, fromDrag);
   ORDER.forEach(k => document.getElementById('dot-'+k).classList.toggle('active', k === target));
   Object.entries(AMBIENTS).forEach(([k,els]) => els.forEach(el => el.classList.toggle('show', k === target)));
 
   current = target;
-  setTimeout(() => animating = false, 460);
+  if (!fromDrag) setTimeout(() => animating = false, 460);
+  applyViewSizing(target, globalW);
 }
 
-// ── RESIZE ENGINE ──
-function makeDraggable(handleL, handleR, getW, setW, minW, maxW, onW) {
+// ── APPLY SIZING per view ──
+function applyViewSizing(view, vw) {
+  const stageH = window.innerHeight;
+  const availH = stageH - 68 - 58;
+
+  if (view === 'desktop') {
+    const w = Math.max(480, Math.min(vw, window.innerWidth - 88));
+    document.getElementById('res-d').style.width = w + 'px';
+    const scrollH = Math.max(280, stageH - 68 - 58 - 44);
+    document.getElementById('d-scroll').style.height = scrollH + 'px';
+  }
+
+  if (view === 'tablet') {
+    const clampW = Math.max(300, Math.min(vw, Math.min(window.innerWidth - 88, 900)));
+    const ratio  = 1366 / 1024;
+    let finalW = clampW;
+    let finalH = Math.round(clampW * ratio);
+    const maxH = availH - 24;
+    if (finalH > maxH) { finalH = maxH; finalW = Math.round(maxH / ratio); }
+    const resT   = document.getElementById('res-t');
+    const tShell = document.getElementById('tablet-shell');
+    const tScroll= document.getElementById('t-scroll');
+    resT.style.width   = finalW + 'px';
+    resT.style.height  = finalH + 'px';
+    tShell.style.width = tShell.style.height = '100%';
+    tScroll.style.height = (finalH - 26) + 'px';
+  }
+
+  if (view === 'mobile') {
+    const ratio  = 844 / 390;
+    const mW     = Math.round(availH / ratio);
+    const clampW = Math.max(220, Math.min(mW, 300));
+    const clampH = Math.round(clampW * ratio);
+    const ps = document.getElementById('phone-shell');
+    const pi = document.getElementById('m-scroll');
+    ps.style.width  = clampW + 'px';
+    ps.style.height = clampH + 'px';
+    pi.style.height = (clampH - 22) + 'px';
+  }
+}
+
+// ── UNIFIED DRAG RESIZE ──
+// All handles control the same globalW and trigger breakpoint switches
+const handlePairs = [
+  ['dh-dl','dh-dr'],
+  ['dh-tl','dh-tr'],
+];
+
+handlePairs.forEach(([lId, rId]) => {
+  const hl = document.getElementById(lId);
+  const hr = document.getElementById(rId);
+  if (!hl || !hr) return;
+
   let drag = false, startX = 0, startW = 0, side = 0;
+
   function down(e, s) {
-    drag = true; side = s;
+    drag = true; isDragging = true; side = s;
     startX = e.touches ? e.touches[0].clientX : e.clientX;
-    startW = getW();
+    startW = globalW;
     document.body.style.cursor = 'ew-resize';
     document.body.style.userSelect = 'none';
-    handleL.classList.add('dragging'); handleR.classList.add('dragging');
+    hl.classList.add('dragging'); hr.classList.add('dragging');
     e.preventDefault();
   }
+
   function move(e) {
     if (!drag) return;
     const cx = e.touches ? e.touches[0].clientX : e.clientX;
+    // multiply delta by 2 so dragging feels 1:1 with the frame growing both sides
     const dx = (cx - startX) * side * 2;
-    const nw = Math.max(minW, Math.min(maxW, startW + dx));
-    setW(nw);
-    if (onW) onW(Math.round(nw));
+    const nw = Math.max(320, Math.min(1440, startW + dx));
+    globalW = nw;
+    updateBadge(nw);
+    const bp = resolveBreakpoint(nw);
+    if (bp !== current) {
+      switchTo(bp, true);
+    } else {
+      applyViewSizing(current, nw);
+    }
   }
+
   function up() {
-    drag = false;
+    drag = false; isDragging = false;
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-    handleL.classList.remove('dragging'); handleR.classList.remove('dragging');
+    hl.classList.remove('dragging'); hr.classList.remove('dragging');
   }
-  handleL.addEventListener('mousedown',  e => down(e, -1));
-  handleR.addEventListener('mousedown',  e => down(e,  1));
-  handleL.addEventListener('touchstart', e => down(e, -1), {passive:false});
-  handleR.addEventListener('touchstart', e => down(e,  1), {passive:false});
+
+  hl.addEventListener('mousedown',  e => down(e, -1));
+  hr.addEventListener('mousedown',  e => down(e,  1));
+  hl.addEventListener('touchstart', e => down(e, -1), {passive:false});
+  hr.addEventListener('touchstart', e => down(e,  1), {passive:false});
   window.addEventListener('mousemove',  move);
   window.addEventListener('touchmove',  move, {passive:false});
   window.addEventListener('mouseup',    up);
   window.addEventListener('touchend',   up);
+});
+
+// ── INIT SIZING ──
+function initSizing() {
+  globalW = Math.min(1200, window.innerWidth - 88);
+  applyViewSizing('desktop', globalW);
+  applyViewSizing('tablet', Math.min(560, window.innerWidth - 88));
+  applyViewSizing('mobile', globalW);
+  updateBadge(globalW);
 }
 
-// Desktop resize
-const resD = document.getElementById('res-d');
-makeDraggable(
-  document.getElementById('dh-dl'),
-  document.getElementById('dh-dr'),
-  () => resD.offsetWidth,
-  w  => resD.style.width = w + 'px',
-  480, 1280,
-  w  => { if (current==='desktop') updateBadge('desktop', w); }
-);
+window.addEventListener('resize', () => { if (!isDragging) initSizing(); });
 
-// Tablet resize — also scales the shell height proportionally
-const resT  = document.getElementById('res-t');
-const tShell= document.getElementById('tablet-shell');
-const tScroll = document.getElementById('t-scroll');
-
-function applyTabletSize(w) {
-  // iPad Pro 11" ≈ 3:4 ratio  (1024 × 1366)
-  const h = Math.round(w * (1366/1024));
-  const maxH = window.innerHeight - 128;
-  const clampH = Math.min(h, maxH);
-  const clampW = Math.round(clampH * (1024/1366));
-  const finalW = Math.max(280, Math.min(w, clampW));
-  const finalH = Math.round(finalW * (1366/1024));
-  resT.style.width  = finalW + 'px';
-  resT.style.height = finalH + 'px';
-  tShell.style.width  = '100%';
-  tShell.style.height = '100%';
-  tScroll.style.height = (finalH - 26) + 'px'; // subtract frame padding
-  if (current==='tablet') updateBadge('tablet', finalW);
-}
-
-makeDraggable(
-  document.getElementById('dh-tl'),
-  document.getElementById('dh-tr'),
-  () => resT.offsetWidth,
-  w  => applyTabletSize(w),
-  300, 760,
-  () => {}
-);
-
-// ── DYNAMIC SIZING ──
-function sizeAll() {
-  // Desktop scroll height = stage height - topbar - chrome - meta - hint
-  const sh = window.innerHeight - 68 - 58 - 44 - 2;
-  document.getElementById('d-scroll').style.height = Math.max(280, sh) + 'px';
-
-  // Mobile: fit in stage
-  const availH = window.innerHeight - 128;
-  const targetW = Math.round(availH * 390/844);
-  const clampW  = Math.min(targetW, 300);
-  const clampH  = Math.round(clampW * 844/390);
-  const ps = document.getElementById('phone-shell');
-  ps.style.width  = clampW + 'px';
-  ps.style.height = clampH + 'px';
-  const pi = document.getElementById('m-scroll');
-  pi.style.height = (clampH - 22) + 'px';
-
-  // Tablet initial size
-  const tabW = Math.min(560, window.innerWidth - 88);
-  applyTabletSize(tabW);
-}
-
-window.addEventListener('resize', sizeAll);
-sizeAll();
-
-// ── INIT ──
 window.addEventListener('load', () => {
   updatePill('desktop', true);
   AMBIENTS.desktop.forEach(el => el.classList.add('show'));
+  initSizing();
 });
 
-document.querySelectorAll('.sw-btn').forEach(b => b.addEventListener('click', () => switchTo(b.dataset.view)));
+// Manual switcher buttons — snap globalW to midpoint of each breakpoint
+document.querySelectorAll('.sw-btn').forEach(b => b.addEventListener('click', () => {
+  const snaps = { desktop: 1200, tablet: 860, mobile: 390 };
+  globalW = snaps[b.dataset.view];
+  updateBadge(globalW);
+  switchTo(b.dataset.view, false);
+  setTimeout(() => applyViewSizing(b.dataset.view, globalW), 50);
+}));
+
 document.addEventListener('keydown', e => {
   const i = ORDER.indexOf(current);
   if (e.key==='ArrowRight' && i < ORDER.length-1) switchTo(ORDER[i+1]);
